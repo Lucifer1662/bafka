@@ -1,7 +1,7 @@
 ﻿project ("bafka")
 
 find_package(CapnProto CONFIG REQUIRED)
-target_link_libraries(idl)
+target_link_libraries(idl2)
 
 add_executable (bafka_client "main.cpp")
 

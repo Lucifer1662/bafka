@@ -76,6 +76,8 @@
         "csignal": "cpp",
         "stop_token": "cpp",
         "thread": "cpp",
-        "codecvt": "cpp"
+        "codecvt": "cpp",
+        "condition_variable": "cpp",
+        "mutex": "cpp"
     }
 }
