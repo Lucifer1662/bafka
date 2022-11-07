@@ -1,0 +1,542 @@
+
+#include <memory>
+#include <iostream>
+#include <unordered_set>
+#include <functional>
+#include <list>
+#include <queue>
+#include <string>
+
+class Context;
+
+thread_local std::queue<Context *> current_context;
+
+class Context
+{
+    std::function<void()> handler;
+    std::unordered_set<void *> dependents;
+    std::unordered_set<void *> invokers;
+    std::unordered_set<Context *> dirty;
+    bool being_invoked = false;
+
+public:
+    template <typename Func>
+    Context(Func &&handler) : handler(std::forward<Func>(handler)) {}
+
+    void invoke()
+    {
+        if (!being_invoked)
+        {
+            current_context.push(this);
+            being_invoked = true;
+            dependents = {};
+            invokers = {};
+            handler();
+            being_invoked = false;
+            current_context.pop();
+
+            update_dirty();
+        }
+    }
+
+    void called(void *id)
+    {
+        dependents.insert(id);
+    }
+
+    void updated(void *id)
+    {
+        invokers.insert(id);
+    }
+
+    void dirtied(const std::unordered_set<Context *> cs)
+    {
+        dirty.insert(cs.begin(), cs.end());
+    }
+
+    void update_dirty()
+    {
+        bool self_dirtied = false;
+        for (auto &d : dirty)
+        {
+            if (d != this)
+            {
+                d->invoke();
+            }
+            else
+            {
+                self_dirtied = true;
+            }
+        }
+        dirty = {};
+
+        // if(self_dirtied){
+        //     invoke();
+        // }
+    }
+};
+
+using Context_Ptr = std::unique_ptr<Context>;
+
+template <typename Func>
+Context_Ptr context(Func &&func)
+{
+    auto c = std::make_unique<Context>(func);
+    c->invoke();
+    return c;
+}
+
+template <typename Event>
+struct Emitter
+{
+    Event event;
+    std::unordered_set<Context *> used_in_contexts;
+    Emitter(Event &&event) : event(std::forward<Event>(event)) {}
+
+    void operator()(Event &&new_event)
+    {
+        if (!current_context.empty())
+        {
+            current_context.back()->updated(this);
+            current_context.back()->dirtied(used_in_contexts);
+            used_in_contexts = {};
+        }
+        event = std::forward<Event>(new_event);
+        // for(auto used_in : used_in_contexts){
+        //     used_in->invoke();
+        // }
+    }
+
+    const Event &operator()()
+    {
+        if (!current_context.empty())
+        {
+            current_context.back()->called(this);
+            used_in_contexts.insert(current_context.back());
+        }
+        return event;
+    }
+};
+
+template <typename Event>
+auto event_emmiter1(Event &&default_event)
+{
+    auto emitter = std::make_shared<Emitter<Event>>(std::forward<Event>(default_event));
+    return std::make_tuple(
+        [=]()
+        {
+            return (*emitter)();
+        },
+        [=](auto new_e)
+        {
+            (*emitter)(std::forward<Event>(new_e));
+        });
+}
+
+template <typename Event>
+struct State
+{
+    std::shared_ptr<Emitter<Event>> emitter;
+
+    State(Event &&default_event) : emitter(std::make_shared<Emitter<Event>>(std::forward<Event>(default_event))) {}
+    State(const State &s) : emitter(s.emitter) {}
+
+    const Event &get() const
+    {
+        return (*emitter)();
+    }
+
+    template <typename E>
+    void set(E &&e) const
+    {
+        (*emitter)(std::forward<Event>(e));
+    }
+
+    auto to_tup()
+    {
+        return std::make_tuple(
+            [=]()
+            {
+                return (*emitter)();
+            },
+            [=](auto new_e)
+            {
+                (*emitter)(std::forward<Event>(new_e));
+            });
+    }
+};
+
+template <typename Event>
+auto event_emmiter(Event &&default_event)
+{
+    auto e = std::make_shared<Event>(std::forward<Event>(default_event));
+    return std::make_tuple(
+        [=]()
+        {
+            if (!current_context.empty())
+            {
+                current_context.back()->called(&*e);
+            }
+            return *e;
+        },
+        [=](Event &&new_e)
+        {
+            *e = std::forward<Event>(new_e);
+        });
+}
+
+struct TaxCalculator
+{
+    State<int> income = State<int>(10);
+
+    int calc() const
+    {
+        auto res = income.get() * 5;
+        return res;
+    }
+};
+
+struct View;
+
+using View_Ptr = std::shared_ptr<View>;
+using newV = std::shared_ptr<View>;
+
+struct Vec2
+{
+    int x, y;
+    Vec2(int x, int y) : x(x), y(y) {}
+    Vec2() = default;
+    Vec2(const Vec2 &) = default;
+    Vec2(Vec2 &&) = default;
+    Vec2 &operator=(const Vec2 &) = default;
+};
+
+struct Vec4
+{
+    union
+    {
+        int x;
+        int r;
+        int left;
+    };
+    union
+    {
+        int y;
+        int g;
+        int top;
+    };
+    union
+    {
+        int z;
+        int b;
+        int bottom;
+    };
+    union
+    {
+        int w;
+        int a;
+        int right;
+    };
+
+    Vec4(int x, int y, int z, int w) : x(x), y(y), z(z), w(w) {}
+    Vec4() = default;
+    Vec4(const Vec4 &) = default;
+    Vec4(Vec4 &&) = default;
+    Vec4 &operator=(const Vec4 &) = default;
+};
+
+using Colour = Vec4;
+
+struct Rect
+{
+    int x, y, width, height;
+
+    bool contains(const Vec2 &pos)
+    {
+        return x <= pos.x && y <= pos.y && pos.x <= x + width && pos.y <= y + height;
+    }
+};
+
+struct Key
+{
+    char c;
+};
+
+enum DisplayStyle
+{
+    Flex,
+    Inline
+};
+
+struct Style
+{
+    DisplayStyle display;
+    Vec2 size;
+    Vec4 margin;
+    Vec4 padding;
+    std::optional<Colour> colour;
+
+    Style() = default;
+    Style(const Style &) = default;
+    Style(Style &&) = default;
+    Style &operator=(const Style &) = default;
+};
+
+struct IRectangle
+{
+
+    virtual void setPosition(const Vec2 &pos) = 0;
+    virtual void setSize(const Vec2 &size) = 0;
+
+    virtual void draw() = 0;
+};
+
+struct IGraphics
+{
+    virtual IRectangle *createRectangle() = 0;
+};
+
+
+struct CMDRectangle : public IRectangle
+{
+    Vec2 pos;
+    Vec2 size;
+    void setPosition(const Vec2 &pos) override
+    {
+        this->pos = pos;
+    }
+
+    void setSize(const Vec2 &size)
+    {
+        this->size = size;
+    }
+
+    void draw()
+    {
+        std::cout << pos.x << ", " << pos.y << std::endl;
+    }
+};
+
+struct CMDGraphic : public IGraphics
+{
+    IRectangle *createRectangle() override
+    {
+        return new CMDRectangle();
+    };
+};
+
+struct View;
+
+void inlineDirty(View &parent, std::vector<View_Ptr> &children);
+
+struct View
+{
+    std::vector<View_Ptr> children;
+
+    Rect box;
+    Rect contentBox;
+    Style style;
+    std::unique_ptr<IRectangle> rectangleGraphic;
+
+    View(const View &v) = delete;
+    View(View &&v) : children(children)
+    {
+        v.children = {};
+    };
+
+    View(std::vector<View_Ptr> &&children) : children(std::move(children)) {}
+
+    virtual void draw(IGraphics &graphics)
+    {
+        if (!rectangleGraphic)
+        {
+            rectangleGraphic = std::unique_ptr<IRectangle>(graphics.createRectangle());
+            rectangleGraphic->setPosition({box.x, box.y});
+            rectangleGraphic->setSize({box.width, box.height});
+        }
+
+        rectangleGraphic->draw();
+
+        for (auto c : children)
+        {
+            c->draw(graphics);
+        }
+    }
+
+    virtual void dirty()
+    {
+        inlineDirty(*this, children);
+    }
+
+    std::optional<View_Ptr> ViewIn(const Vec2 &pos)
+    {
+        for (auto &child : children)
+        {
+            if (child->box.contains(pos))
+            {
+                return child;
+            }
+        }
+        return {};
+    }
+
+    virtual void onClick(const Vec2 &pos)
+    {
+        auto child = ViewIn(pos);
+        if (child)
+        {
+            (*child)->onClick(pos);
+        }
+    }
+
+    virtual View_Ptr requestFocus(Vec2 pos)
+    {
+        auto child = ViewIn(pos);
+        if (child)
+        {
+            return (*child)->requestFocus(pos);
+        }
+        return {};
+    }
+
+    virtual void OnKeyPress(const Key &key) {}
+
+    virtual ~View() {}
+};
+
+void inlineDirty(View &parent, std::vector<View_Ptr> &children)
+{
+    int height = 0;
+    if (children.size() > 0)
+    {
+        height = children.front()->style.margin.top;
+    }
+    for (auto c : children)
+    {
+        c->box.y = height;
+        c->box.x = parent.contentBox.x;
+        c->dirty();
+        height += c->style.size.y + c->style.margin.bottom + c->box.height;
+    }
+}
+
+struct Div : public View
+{
+    Div(std::vector<View_Ptr> &&children) : View(std::move(children)) {}
+};
+
+struct Paragraph : public View
+{
+    std::string text;
+    Paragraph(std::string text, std::vector<View_Ptr> &&children) : View(std::move(children)), text(text) {}
+
+    void draw(IGraphics &graphics) override
+    {
+        std::cout << text << std::endl;
+        View::draw(graphics);
+    }
+};
+
+State<Vec2> click(Vec2(0, 0));
+
+struct Button : public View
+{
+    std::function<void()> onClick = []() {};
+    Context_Ptr clickContext;
+    bool initialized = false;
+
+    Button(std::function<void()> onClick, std::vector<View_Ptr> &&children) : View(std::move(children)), onClick(onClick)
+    {
+
+        clickContext = context([&, this]()
+                               {
+            Vec2 pos = click.get();
+            if(initialized){
+                //TODO : Fill in button click check
+                if(true){
+                    this->onClick();
+                }
+            } });
+        initialized = true;
+    }
+
+    void draw(IGraphics &graphics) override
+    {
+        View::draw(graphics);
+    }
+};
+
+View_Ptr App()
+{
+    auto status = State<std::string>("good");
+
+    return newV(new Div(
+        {newV(new Button([=]()
+                         { status.set("bad"); },
+                         {})),
+         newV(new Paragraph(status.get(), {}))}));
+};
+
+View_Ptr Comp(View *v)
+{
+
+    CMDGraphic graphic;
+    auto app = App();
+    auto c3 = context([&]()
+                      {
+        app->draw(graphic); });
+
+        return app;
+}
+
+int main(int argn, char **argv)
+{
+
+    View_Ptr app;
+    CMDGraphic graphic;
+    auto c3 = context([&]()
+                      {
+        app = App();
+
+        
+
+        app->draw(graphic); });
+
+    auto c4 = context([=]()
+                      { click.set(Vec2(5, 5)); });
+
+    auto [get, set] = event_emmiter1<int>(0);
+
+    TaxCalculator tax;
+
+    TaxCalculator t1 = tax;
+
+    auto c = context([=]()
+                     {
+        std::cout << get() + 1 << std::endl;
+        std::cout << "Tax After:" << tax.calc() << std::endl; });
+
+    // input from command line -> state -> calculation -> output
+
+    bool run = true;
+    while (run)
+    {
+        auto c2 = context([&]()
+                          {
+        
+            int x;
+            std::cin >> x;
+
+            std::cout << "Tax Before:" << tax.calc() << std::endl;
+
+            if(x==0)
+                run=false;
+            
+            set(x);
+            tax.income.set(x); });
+
+        std::cout << "Loop" << std::endl;
+    }
+
+    return 0;
+}

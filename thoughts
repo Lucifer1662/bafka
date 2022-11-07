@@ -1,0 +1,2 @@
+changeText -> recalc size -> if size or pos change be dirty -> if dirty parent needs to calc -> if it change it parent needs to recalc
+need to delay dirty check until end of button click
